@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>工號成本追蹤</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Barlow+Semi+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<style>
+:root{
+  --paper:#e9edf0; --panel:#fbfcfd; --ink:#16232e; --muted:#5b6a76; --line:#c9d2d9;
+  --spent:#1d4f7a; --plan:#8db4d6; --budget:#d99a00; --warn:#c8621b; --over:#b3261e; --ok:#2f7d4f;
+  --focus:#d99a00;
+  --num:"Barlow Semi Condensed","Noto Sans TC",system-ui,sans-serif;
+  --txt:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#10171d; --panel:#18222a; --ink:#e3e9ee; --muted:#93a3af; --line:#2c3a45;
+    --spent:#5a9bd4; --plan:#2e5779; --budget:#f0b429; --warn:#e8894a; --over:#ef6b61; --ok:#5cb784;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#10171d; --panel:#18222a; --ink:#e3e9ee; --muted:#93a3af; --line:#2c3a45;
+  --spent:#5a9bd4; --plan:#2e5779; --budget:#f0b429; --warn:#e8894a; --over:#ef6b61; --ok:#5cb784;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.55 var(--txt)}
+button,input,select{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+
+header{display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px;padding:14px 24px;
+  background:var(--panel);border-bottom:3px solid var(--spent)}
+header h1{margin:0;font-size:1.25rem;font-weight:700;letter-spacing:.02em}
+#status{color:var(--muted);font-size:.85rem;margin-right:auto}
+#status.err{color:var(--over)}
+.btn{border:1px solid var(--line);background:var(--panel);padding:6px 14px;border-radius:4px;cursor:pointer}
+.btn:hover{border-color:var(--spent)}
+.btn.primary{background:var(--spent);border-color:var(--spent);color:#fff}
+
+.layout{display:grid;grid-template-columns:260px 1fr;gap:20px;padding:20px 24px;max-width:1500px;margin:0 auto}
+@media (max-width:860px){.layout{grid-template-columns:1fr;padding:14px}}
+
+aside{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:14px;align-self:start;
+  position:sticky;top:12px;max-height:calc(100vh - 24px);display:flex;flex-direction:column}
+@media (max-width:860px){aside{position:static;max-height:360px}}
+aside h2,section h2{margin:0 0 10px;font-size:1rem}
+#search{width:100%;padding:6px 10px;border:1px solid var(--line);border-radius:4px;background:transparent}
+.picks{display:flex;gap:6px;margin:8px 0}
+.picks button{flex:1;font-size:.8rem;padding:4px 0}
+#orderList{overflow:auto;flex:1;margin:0 -6px}
+#orderList label{display:flex;gap:8px;align-items:flex-start;padding:5px 6px;border-radius:3px;cursor:pointer}
+#orderList label:hover{background:var(--paper)}
+#orderList .no{font-family:var(--num);font-weight:600}
+#orderList .nm{display:block;color:var(--muted);font-size:.78rem;line-height:1.3}
+
+main{min-width:0;display:flex;flex-direction:column;gap:20px}
+section{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:16px 18px}
+
+.totals{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--line);border-radius:4px;overflow:hidden}
+.totals div{padding:12px 16px;border-right:1px solid var(--line);background:var(--panel)}
+.totals div:last-child{border-right:0}
+.totals span{display:block;font-size:.8rem;color:var(--muted)}
+.totals b{font-family:var(--num);font-size:1.7rem;font-weight:600;line-height:1.2}
+.totals .s b{color:var(--spent)} .totals .b b{color:var(--budget)}
+@media (max-width:640px){.totals{grid-template-columns:1fr 1fr}.totals div:nth-child(2){border-right:0}.totals div:nth-child(-n+2){border-bottom:1px solid var(--line)}}
+
+.chart-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap}
+.legend{display:flex;gap:14px;font-size:.82rem;color:var(--muted)}
+.legend i{display:inline-block;width:12px;height:12px;margin-right:5px;vertical-align:-1px;border-radius:2px}
+.chart-wrap{position:relative;height:380px}
+
+.table-wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;min-width:900px}
+th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+th{font-size:.8rem;color:var(--muted);font-weight:500;border-bottom:2px solid var(--line)}
+th:first-child,td:first-child,th:nth-child(2),td:nth-child(2){text-align:left}
+td{font-family:var(--num);font-size:1rem;font-variant-numeric:tabular-nums}
+td.nm{font-family:var(--txt);font-size:.85rem;color:var(--muted);white-space:normal;max-width:220px}
+tr.order{cursor:pointer}
+tr.order:hover td{background:var(--paper)}
+.caret{display:inline-block;width:1em;color:var(--muted);transition:transform .15s}
+tr.open .caret{transform:rotate(90deg)}
+.budget-in{width:120px;text-align:right;padding:4px 8px;border:1px solid var(--line);border-radius:3px;background:transparent;font-family:var(--num)}
+.budget-in.saving{border-color:var(--budget)}
+.meter{display:flex;align-items:center;gap:8px;justify-content:flex-end}
+.meter .bar{width:90px;height:8px;background:var(--paper);border-radius:4px;position:relative;overflow:hidden}
+.meter .bar i{position:absolute;inset:0 auto 0 0;background:var(--ok)}
+.meter .bar i.warn{background:var(--warn)} .meter .bar i.over{background:var(--over)}
+.neg{color:var(--over)}
+tr.detail td{background:var(--paper);padding:0}
+.detail-box{padding:10px 14px 14px 36px}
+.detail-box table{min-width:0;width:auto}
+tr.detail .detail-box th,tr.detail .detail-box td{padding:6px 0 6px 32px;border-bottom:1px solid var(--line);background:transparent;text-align:right}
+tr.detail .detail-box th:first-child,tr.detail .detail-box td:first-child{padding-left:4px;text-align:left;min-width:5em}
+tr.detail .detail-box td:nth-child(n+5),tr.detail .detail-box th:nth-child(n+5){min-width:7.5em}
+tr.detail .detail-box td:last-child,tr.detail .detail-box th:last-child{padding-right:8px}
+.empty{padding:40px;text-align:center;color:var(--muted)}
+
+dialog{border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);padding:0;width:min(560px,94vw)}
+dialog::backdrop{background:rgba(10,20,30,.45)}
+dialog form{padding:18px 20px}
+dialog h3{margin:0 0 12px}
+dialog fieldset{border:1px solid var(--line);border-radius:4px;margin:0 0 14px;padding:10px 12px}
+dialog legend{font-size:.85rem;color:var(--muted);padding:0 4px}
+.row{display:grid;grid-template-columns:120px 1fr;gap:8px;align-items:center;margin:6px 0}
+.row input,.row select{padding:5px 8px;border:1px solid var(--line);border-radius:3px;background:transparent;width:100%}
+.row select option{background:var(--panel)}
+.hint{font-size:.8rem;color:var(--muted);margin:4px 0 0}
+.dlg-actions{display:flex;justify-content:flex-end;gap:8px}
+
+#toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--ink);color:var(--paper);
+  padding:10px 16px;border-radius:4px;font-size:.9rem;opacity:0;pointer-events:none;transition:opacity .2s;max-width:90vw}
+#toast.show{opacity:1} #toast.err{background:var(--over);color:#fff}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>工號成本追蹤</h1>
+  <span id="status">讀取中</span>
+  <button class="btn" id="btnReload">重新整理</button>
+  <button class="btn" id="btnSettings">設定</button>
+</header>
+
+<div class="layout">
+  <aside>
+    <h2>顯示的工號</h2>
+    <input id="search" type="search" placeholder="搜尋工號或名稱">
+    <div class="picks">
+      <button class="btn" data-pick="all">全選</button>
+      <button class="btn" data-pick="none">清除</button>
+      <button class="btn" data-pick="budget">有預算</button>
+    </div>
+    <div id="orderList"></div>
+  </aside>
+
+  <main>
+    <div class="totals">
+      <div class="s"><span>截至今日支出</span><b id="tSpent">0</b></div>
+      <div><span>預期支出</span><b id="tPlan">0</b></div>
+      <div class="b"><span>預算</span><b id="tBudget">0</b></div>
+      <div><span>預算剩餘（以預期計）</span><b id="tLeft">0</b></div>
+    </div>
+
+    <section>
+      <div class="chart-head">
+        <h2>支出與預算</h2>
+        <div class="legend">
+          <span><i style="background:var(--spent)"></i>截至今日</span>
+          <span><i style="background:var(--plan)"></i>預期</span>
+          <span><i style="background:var(--budget)"></i>預算</span>
+        </div>
+      </div>
+      <div class="chart-wrap"><canvas id="chart"></canvas></div>
+    </section>
+
+    <section>
+      <h2>工號明細</h2>
+      <p class="hint" style="margin:-6px 0 10px">點選列可展開每位人員的平日／週六／週日天數。預算輸入後按 Enter 或離開欄位即寫回試算表。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>工號</th><th>名稱</th><th>人數</th><th>人日</th><th>期間</th>
+            <th>截至今日</th><th>預期支出</th><th>預算</th><th>預期／預算</th><th>剩餘</th>
+          </tr></thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</div>
+
+<dialog id="dlg">
+  <form method="dialog">
+    <h3>設定</h3>
+    <fieldset>
+      <legend>資料來源</legend>
+      <div class="row"><label for="cUrl">Apps Script 網址</label><input id="cUrl" type="url"></div>
+    </fieldset>
+    <fieldset>
+      <legend>日薪（元／人／日）</legend>
+      <div class="row"><label for="rWd">週一至週五</label><input id="rWd" type="number" min="0"></div>
+      <div class="row"><label for="rSat">週六</label><input id="rSat" type="number" min="0"></div>
+      <div class="row"><label for="rSun">週日</label><input id="rSun" type="number" min="0"></div>
+    </fieldset>
+    <fieldset>
+      <legend>欄位對應</legend>
+      <div class="row"><label for="mOrder">工號</label><select id="mOrder"></select></div>
+      <div class="row"><label for="mName">工號名稱</label><select id="mName"></select></div>
+      <div class="row"><label for="mPerson">人員</label><select id="mPerson"></select></div>
+      <div class="row"><label for="mDate">單一日期</label><select id="mDate"></select></div>
+      <div class="row"><label for="mStart">開始日期</label><select id="mStart"></select></div>
+      <div class="row"><label for="mEnd">結束日期</label><select id="mEnd"></select></div>
+      <p class="hint">每列可以是「一人一天」或「一段期間」。有開始日期時優先用期間展開；人員欄可用逗號、頓號分隔多人。同一人同一天在同一工號只計一次。</p>
+    </fieldset>
+    <div class="dlg-actions">
+      <button class="btn" value="cancel">取消</button>
+      <button class="btn primary" value="ok" id="btnSaveCfg">套用</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" role="status"></div>
+
+<script>
+/* ============ 設定與暫存 ============ */
+const DEFAULT_URL = 'https://script.google.com/macros/s/AKfycby0oIervhkmGpopOo12Bd43OuuMVc5T5kIPAA_QqZDwVU-M-QAN-86VlUeCZo5r-eoB6Q/exec';
+const store = {
+  get(k, d){ try{ const v = localStorage.getItem('costdash:'+k); return v == null ? d : JSON.parse(v); }catch(e){ return d; } },
+  set(k, v){ try{ localStorage.setItem('costdash:'+k, JSON.stringify(v)); }catch(e){} }
+};
+let cfg = Object.assign({ url: DEFAULT_URL, rates: { wd:14000, sat:15500, sun:3500 },
+  map: { order:'工號', name:'備註', person:'姓名', start:'開始日期', end:'結束日期', date:'' } }, store.get('cfg2', {}));
+let rows = [], headers = [], budgets = {}, orders = [];
+let selected = new Set(store.get('selected', []));
+let hasSelection = store.get('selected', null) !== null;
+let openRows = new Set();
+let chart = null;
+let chartOrders = [];
+
+const FIELD_CANDIDATES = {
+  order:  ['工號','工令','工令號','工作號碼','workorder','orderno','order','jobno','wo'],
+  name:   ['備註','工號名稱','工作名稱','工程名稱','名稱','案名','title','description','desc'],
+  person: ['人員','姓名','檢測人員','派工人員','人名','支援人員','name','person','personnel','staff','members'],
+  start:  ['開始日期','起始日期','起日','開始','出發日期','startdate','start','from'],
+  end:    ['結束日期','完成日期','迄日','結束','返回日期','enddate','end','to'],
+  date:   ['日期','工作日期','派工日期','date','workdate','day']
+};
+
+/* ============ 工具 ============ */
+const $ = s => document.querySelector(s);
+const money = n => (n == null || isNaN(n)) ? '—' : Math.round(n).toLocaleString('zh-TW');
+const pad = n => String(n).padStart(2, '0');
+const keyOf = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+const todayKey = () => keyOf(new Date());
+function toast(msg, err){
+  const t = $('#toast'); t.textContent = msg; t.className = 'show' + (err ? ' err' : '');
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.className = '', err ? 5000 : 2200);
+}
+function setStatus(msg, err){ const s = $('#status'); s.textContent = msg; s.className = err ? 'err' : ''; }
+
+function parseDate(v){
+  if (v == null || v === '') return null;
+  if (typeof v === 'number'){                       // Excel 序號
+    if (v > 20000 && v < 80000){ const d = new Date(Math.round((v - 25569) * 864e5)); return keyOf(new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())); }
+    return null;
+  }
+  let s = String(v).trim();
+  let m = s.match(/^(\d{2,4})[\/\-.年](\d{1,2})[\/\-.月](\d{1,2})日?$/);
+  if (m){
+    let y = +m[1]; if (y < 1911) y += 1911;        // 民國年
+    return `${y}-${pad(m[2])}-${pad(m[3])}`;
+  }
+  if (/T\d{2}:\d{2}/.test(s)){ const d = new Date(s); if (!isNaN(d)) return keyOf(d); }
+  m = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+  if (m) return `${m[1]}-${pad(m[2])}-${pad(m[3])}`;
+  const d = new Date(s); return isNaN(d) ? null : keyOf(d);
+}
+function dateRange(a, b){
+  if (b < a) [a, b] = [b, a];
+  const out = [], [y1,m1,d1] = a.split('-').map(Number), [y2,m2,d2] = b.split('-').map(Number);
+  const cur = new Date(y1, m1-1, d1), end = new Date(y2, m2-1, d2);
+  for (let i = 0; cur <= end && i < 400; i++){ out.push(keyOf(cur)); cur.setDate(cur.getDate()+1); }
+  return out;
+}
+function dayType(k){ const [y,m,d] = k.split('-').map(Number); const w = new Date(y, m-1, d).getDay(); return w === 0 ? 'sun' : w === 6 ? 'sat' : 'wd'; }
+
+/* ============ 讀取資料 ============ */
+// 深層搜尋：找出含「工號」「姓名」欄位的陣列（相容派工系統原本的回傳格式）
+function findRecords(node, depth = 0){
+  if (depth > 6 || node == null) return null;
+  if (typeof node === 'string' && /^[\[{]/.test(node.trim())){ try{ return findRecords(JSON.parse(node), depth + 1); }catch(e){ return null; } }
+  if (Array.isArray(node)){
+    const f = node.find(x => x != null);
+    const keys = Array.isArray(f) ? f.map(String) : (f && typeof f === 'object') ? Object.keys(f) : [];
+    if (keys.includes('工號') && keys.includes('姓名')) return node;
+    for (const x of node.slice(0, 50)){ const r = findRecords(x, depth + 1); if (r) return r; }
+    return null;
+  }
+  if (typeof node === 'object'){
+    for (const v of Object.values(node)){ const r = findRecords(v, depth + 1); if (r) return r; }
+  }
+  return null;
+}
+function describe(data){
+  const s = JSON.stringify(data);
+  const keys = data && typeof data === 'object' && !Array.isArray(data) ? Object.keys(data).join(', ') : (Array.isArray(data) ? `陣列 ${data.length} 筆` : typeof data);
+  return `回傳結構：${keys}；內容開頭：${s.slice(0, 160)}`;
+}
+function normalize(data){
+  let recs = null, bud = null;
+  if (data && !Array.isArray(data)){
+    if (data.ok === false || data.success === false || data.status === 'error') throw new Error(data.error || data.message || 'Apps Script 回報錯誤');
+    if (data.budgets) bud = data.budgets;
+    if (Array.isArray(data.records)) recs = data.records;
+  }
+  if (!recs) recs = findRecords(data);
+  if (!recs && Array.isArray(data) && data.length) recs = data;
+  if (!Array.isArray(recs)){
+    console.log('Apps Script 回傳內容：', data);
+    throw new Error('回傳資料中找不到含「工號、姓名」的資料陣列。' + describe(data));
+  }
+  if (recs.length && Array.isArray(recs[0])){
+    const h = recs[0].map(x => String(x).trim());
+    recs = recs.slice(1).map(r => Object.fromEntries(h.map((k,i) => [k, r[i]])));
+  }
+  if (Array.isArray(bud)){                          // 支援 [{工號, 預算}] 格式
+    const m = {}; bud.forEach(b => { const k = b['工號'] ?? b.orderNo; const v = b['預算'] ?? b.budget; if (k != null && v !== '' && v != null) m[String(k).trim()] = Number(v); });
+    bud = m;
+  }
+  return { recs, bud };
+}
+function autoMap(){
+  const norm = s => String(s).toLowerCase().replace(/[\s_\-()（）]/g, '');
+  const used = new Set();
+  for (const [field, cands] of Object.entries(FIELD_CANDIDATES)){
+    if (field === 'date' && cfg.map.start) { cfg.map.date = ''; continue; }   // 有期間欄位就不用單一日期
+    if (cfg.map[field] && headers.includes(cfg.map[field])) { used.add(cfg.map[field]); continue; }
+    let hit = null;
+    for (const c of cands){ hit = headers.find(h => !used.has(h) && norm(h) === norm(c)); if (hit) break; }
+    if (!hit) for (const c of cands){ hit = headers.find(h => !used.has(h) && norm(h).includes(norm(c))); if (hit) break; }
+    cfg.map[field] = hit || '';
+    if (hit) used.add(hit);
+  }
+}
+
+async function load(){
+  setStatus('讀取中');
+  try{
+    const sep = cfg.url.includes('?') ? '&' : '?';
+    const res = await fetch(cfg.url + sep + 'action=costAll&t=' + Date.now(), { cache: 'no-store' });
+    const text = await res.text();
+    let data;
+    try{ data = JSON.parse(text); }
+    catch(e){ throw new Error('回傳內容不是 JSON，請確認 Apps Script 已部署為「任何人」可存取'); }
+    const { recs, bud } = normalize(data);
+    rows = recs;
+    headers = [...new Set(rows.slice(0, 200).flatMap(r => Object.keys(r)))];
+    if (bud){ budgets = bud; store.set('budgetCache', budgets); }
+    else { budgets = store.get('budgetCache', {}); toast('試算表未回傳預算，暫時使用本機紀錄', true); }
+    autoMap(); store.set('cfg2', cfg);
+    compute();
+    const now = new Date();
+    setStatus(`更新於 ${pad(now.getHours())}:${pad(now.getMinutes())}，共 ${rows.length} 筆紀錄、${orders.length} 個工號`);
+    if (!cfg.map.order || !cfg.map.person || (!cfg.map.date && !cfg.map.start)){
+      setStatus('欄位無法自動辨識，請到「設定」指定工號、人員與日期欄位', true);
+    }
+  }catch(err){
+    setStatus('讀取失敗：' + err.message, true);
+  }
+  render();
+}
+
+/* ============ 計算 ============ */
+function compute(){
+  const m = cfg.map, today = todayKey(), R = cfg.rates;
+  const map = new Map();
+  for (const r of rows){
+    const no = String(r[m.order] ?? '').trim();
+    if (!no) continue;
+    let ppl = r[m.person];
+    ppl = Array.isArray(ppl) ? ppl : String(ppl ?? '').split(/[,，、;；\/\n]+/);
+    ppl = ppl.map(p => String(typeof p === 'object' && p ? (p.name || p['姓名'] || '') : p).trim()).filter(Boolean);
+
+    let days = [];
+    const s = m.start ? parseDate(r[m.start]) : null;
+    if (s){ const e = (m.end && parseDate(r[m.end])) || s; days = dateRange(s, e); }
+    else if (m.date){ const d = parseDate(r[m.date]); if (d) days = [d]; }
+
+    let o = map.get(no);
+    if (!o){ o = { no, names:new Set(), pairs:new Map() }; map.set(no, o); }
+    if (m.name && r[m.name]) o.names.add(String(r[m.name]).trim());
+    for (const p of ppl) for (const d of days) o.pairs.set(p + '|' + d, [p, d]);
+  }
+
+  orders = [...map.values()].map(o => {
+    const per = new Map(); let spent = 0, plan = 0, first = null, last = null;
+    for (const [p, d] of o.pairs.values()){
+      const t = dayType(d), cost = R[t];
+      plan += cost; if (d <= today) spent += cost;
+      if (!first || d < first) first = d; if (!last || d > last) last = d;
+      const x = per.get(p) || { p, wd:0, sat:0, sun:0, spent:0, plan:0 };
+      x[t]++; x.plan += cost; if (d <= today) x.spent += cost;
+      per.set(p, x);
+    }
+    return { no:o.no, name:[...o.names].join('／'), spent, plan, first, last,
+      people:[...per.values()].sort((a,b) => b.plan - a.plan),
+      personDays:o.pairs.size };
+  }).sort((a,b) => a.no.localeCompare(b.no, 'zh-Hant', { numeric:true }));
+
+  if (!hasSelection){ selected = new Set(orders.map(o => o.no)); }
+}
+
+/* ============ 畫面 ============ */
+function render(){ renderList(); renderTotalsChartTable(); }
+
+function renderList(){
+  const q = $('#search').value.trim().toLowerCase();
+  const list = $('#orderList');
+  if (!orders.length){ list.innerHTML = '<div class="empty">沒有工號資料</div>'; return; }
+  list.innerHTML = orders
+    .filter(o => !q || o.no.toLowerCase().includes(q) || o.name.toLowerCase().includes(q))
+    .map(o => `<label><input type="checkbox" value="${esc(o.no)}" ${selected.has(o.no) ? 'checked' : ''}>
+      <span><span class="no">${esc(o.no)}</span>${o.name ? `<span class="nm">${esc(o.name)}</span>` : ''}</span></label>`).join('');
+}
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function renderTotalsChartTable(){
+  const shown = orders.filter(o => selected.has(o.no));
+  const sum = f => shown.reduce((a,o) => a + (f(o) || 0), 0);
+  const tb = sum(o => budgets[o.no]);
+  $('#tSpent').textContent = money(sum(o => o.spent));
+  $('#tPlan').textContent = money(sum(o => o.plan));
+  $('#tBudget').textContent = money(tb);
+  const left = tb - sum(o => budgets[o.no] != null ? o.plan : 0);
+  $('#tLeft').textContent = money(left);
+  $('#tLeft').className = left < 0 ? 'neg' : '';
+
+  drawChart(shown);
+
+  const tbody = $('#tbody');
+  if (!shown.length){ tbody.innerHTML = '<tr><td colspan="10" class="empty">左側勾選工號後顯示</td></tr>'; return; }
+  tbody.innerHTML = shown.map(o => {
+    const b = budgets[o.no];
+    const ratio = b ? o.plan / b : null;
+    const cls = ratio == null ? '' : ratio > .94 ? 'over' : ratio >= .85 ? 'warn' : '';
+    const open = openRows.has(o.no);
+    const period = o.first ? `${o.first.slice(5).replace('-','/')}–${o.last.slice(5).replace('-','/')}` : '—';
+    let html = `<tr class="order ${open ? 'open' : ''}" data-no="${esc(o.no)}">
+      <td><span class="caret">▸</span>${esc(o.no)}</td>
+      <td class="nm">${esc(o.name)}</td>
+      <td>${o.people.length}</td><td>${o.personDays}</td><td>${period}</td>
+      <td>${money(o.spent)}</td><td>${money(o.plan)}</td>
+      <td><input class="budget-in" inputmode="numeric" data-no="${esc(o.no)}" value="${b ?? ''}" placeholder="未設定"></td>
+      <td>${ratio == null ? '—' : `<span class="meter"><span class="bar"><i class="${cls}" style="width:${Math.min(ratio,1)*100}%"></i></span>${(ratio*100).toFixed(0)}%</span>`}</td>
+      <td class="${b != null && b - o.plan < 0 ? 'neg' : ''}">${b == null ? '—' : money(b - o.plan)}</td></tr>`;
+    if (open){
+      html += `<tr class="detail"><td colspan="10"><div class="detail-box"><table>
+        <thead><tr><th>人員</th><th>平日</th><th>週六</th><th>週日</th><th>截至今日</th><th>預期</th></tr></thead><tbody>
+        ${o.people.map(p => `<tr><td style="text-align:left;font-family:var(--txt)">${esc(p.p)}</td><td>${p.wd}</td><td>${p.sat}</td><td>${p.sun}</td><td>${money(p.spent)}</td><td>${money(p.plan)}</td></tr>`).join('')}
+        </tbody></table></div></td></tr>`;
+    }
+    return html;
+  }).join('');
+}
+
+function cssVar(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+function drawChart(shown){
+  chartOrders = shown;
+  const labels = shown.map(o => o.no);
+  const ds = [
+    { label:'截至今日支出', data: shown.map(o => o.spent), backgroundColor: cssVar('--spent') },
+    { label:'預期支出',     data: shown.map(o => o.plan),  backgroundColor: cssVar('--plan') },
+    { label:'預算',         data: shown.map(o => budgets[o.no] ?? null), backgroundColor: cssVar('--budget') }
+  ];
+  const grid = cssVar('--line'), tick = cssVar('--muted');
+  if (chart){ chart.data.labels = labels; chart.data.datasets = ds; chart.update(); return; }
+  chart = new Chart($('#chart'), {
+    type: 'bar',
+    data: { labels, datasets: ds },
+    options: {
+      maintainAspectRatio: false,
+      animation: { duration: 250 },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: items => {
+              const o = chartOrders[items[0].dataIndex];
+              if (!o || o.no !== items[0].label) return items[0].label;
+              return o.name ? [o.no, ...o.name.split('／')] : o.no;
+            },
+            label: c => `${c.dataset.label}：NT$ ${money(c.raw)}`
+          }
+        }
+      },
+      scales: {
+        x: { grid: { display:false }, ticks: { color: tick, maxRotation: 60, autoSkip: false } },
+        y: { beginAtZero: true, grid: { color: grid }, ticks: { color: tick, callback: v => v >= 1e6 ? (v/1e6) + 'M' : v >= 1e3 ? (v/1e3) + 'K' : v } }
+      }
+    }
+  });
+}
+
+/* ============ 預算寫回 ============ */
+async function saveBudget(no, raw, input){
+  const clean = String(raw).replace(/[,\s]/g, '');
+  const val = clean === '' ? null : Number(clean);
+  if (clean !== '' && (isNaN(val) || val < 0)){ toast('預算需為數字', true); input.value = budgets[no] ?? ''; return; }
+  if ((budgets[no] ?? null) === val) return;
+  if (val == null) delete budgets[no]; else budgets[no] = val;
+  store.set('budgetCache', budgets);
+  input.classList.add('saving');
+  try{
+    const res = await fetch(cfg.url, { method:'POST', headers:{ 'Content-Type':'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action:'saveBudget', orderNo:no, budget:val }) });
+    const j = await res.json();
+    if (!j.ok && !j.success) throw new Error(j.error || '寫入失敗');
+    if (j.budgets){ budgets = j.budgets; store.set('budgetCache', budgets); }
+    toast(val == null ? `已清除 ${no} 預算` : `已儲存 ${no} 預算 NT$ ${money(val)}`);
+  }catch(e){
+    toast(`${no} 預算未寫回試算表（${e.message}），已先存在本機`, true);
+  }
+  renderTotalsChartTable();
+}
+
+/* ============ 事件 ============ */
+$('#orderList').addEventListener('change', e => {
+  if (e.target.type !== 'checkbox') return;
+  e.target.checked ? selected.add(e.target.value) : selected.delete(e.target.value);
+  hasSelection = true; store.set('selected', [...selected]); renderTotalsChartTable();
+});
+document.querySelectorAll('[data-pick]').forEach(b => b.addEventListener('click', () => {
+  const k = b.dataset.pick;
+  selected = new Set(k === 'all' ? orders.map(o => o.no) : k === 'budget' ? orders.filter(o => budgets[o.no] != null).map(o => o.no) : []);
+  hasSelection = true; store.set('selected', [...selected]); render();
+}));
+$('#search').addEventListener('input', renderList);
+$('#btnReload').addEventListener('click', load);
+
+$('#tbody').addEventListener('click', e => {
+  if (e.target.closest('.budget-in')) return;
+  const tr = e.target.closest('tr.order'); if (!tr) return;
+  const no = tr.dataset.no; openRows.has(no) ? openRows.delete(no) : openRows.add(no);
+  renderTotalsChartTable();
+});
+$('#tbody').addEventListener('keydown', e => { if (e.target.classList.contains('budget-in') && e.key === 'Enter') e.target.blur(); });
+$('#tbody').addEventListener('focusout', e => {
+  if (e.target.classList.contains('budget-in')) saveBudget(e.target.dataset.no, e.target.value, e.target);
+});
+
+const MAP_IDS = { order:'mOrder', name:'mName', person:'mPerson', date:'mDate', start:'mStart', end:'mEnd' };
+$('#btnSettings').addEventListener('click', () => {
+  $('#cUrl').value = cfg.url; $('#rWd').value = cfg.rates.wd; $('#rSat').value = cfg.rates.sat; $('#rSun').value = cfg.rates.sun;
+  for (const [f, id] of Object.entries(MAP_IDS)){
+    $('#'+id).innerHTML = '<option value="">（不使用）</option>' + headers.map(h => `<option ${cfg.map[f] === h ? 'selected' : ''}>${esc(h)}</option>`).join('');
+  }
+  $('#dlg').showModal();
+});
+$('#dlg').addEventListener('close', () => {
+  if ($('#dlg').returnValue !== 'ok') return;
+  const urlChanged = $('#cUrl').value.trim() !== cfg.url;
+  cfg.url = $('#cUrl').value.trim() || DEFAULT_URL;
+  cfg.rates = { wd:+$('#rWd').value || 0, sat:+$('#rSat').value || 0, sun:+$('#rSun').value || 0 };
+  for (const [f, id] of Object.entries(MAP_IDS)) cfg.map[f] = $('#'+id).value;
+  store.set('cfg2', cfg);
+  if (urlChanged) load(); else { compute(); render(); }
+});
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (chart){ chart.destroy(); chart = null; } renderTotalsChartTable(); });
+
+load();
+</script>
+</body>
+</html>
