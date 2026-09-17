@@ -368,16 +368,42 @@ function autoMap(){
   }
 }
 
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+// 伺服器忙碌、逾時、網路中斷這類暫時性錯誤才重試；設定錯誤直接回報
+const isTransient = msg => /次數過多|simultaneous|too many|忙碌|timed? ?out|逾時|Service|服務|Failed to fetch|NetworkError|Load failed|HTTP 5\d\d|HTTP 429/i.test(msg);
+const RETRY_DELAYS = [1000, 2000, 4000];
+let loading = false;
+
+async function fetchCostAll(){
+  const sep = cfg.url.includes('?') ? '&' : '?';
+  const res = await fetch(cfg.url + sep + 'action=costAll&t=' + Date.now(), { cache: 'no-store' });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const text = await res.text();
+  let data;
+  try{ data = JSON.parse(text); }
+  catch(e){ throw new Error('回傳內容不是 JSON，請確認 Apps Script 已部署為「任何人」可存取'); }
+  return normalize(data);
+}
+
 async function load(){
+  if (loading) return;                              // 避免連點重新整理疊加請求
+  loading = true;
+  const btn = $('#btnReload'); btn.disabled = true;
   setStatus('讀取中');
   try{
-    const sep = cfg.url.includes('?') ? '&' : '?';
-    const res = await fetch(cfg.url + sep + 'action=costAll&t=' + Date.now(), { cache: 'no-store' });
-    const text = await res.text();
-    let data;
-    try{ data = JSON.parse(text); }
-    catch(e){ throw new Error('回傳內容不是 JSON，請確認 Apps Script 已部署為「任何人」可存取'); }
-    const { recs, bud } = normalize(data);
+    let got = null, lastErr = null;
+    for (let i = 0; i <= RETRY_DELAYS.length; i++){
+      try{ got = await fetchCostAll(); break; }
+      catch(e){
+        lastErr = e;
+        if (i === RETRY_DELAYS.length || !isTransient(e.message)) throw e;
+        const wait = RETRY_DELAYS[i] + Math.random() * 500;   // 加亂數，避免多人同時重試又撞在一起
+        setStatus(`伺服器忙碌，${(wait/1000).toFixed(1)} 秒後自動重試（${i+1}/${RETRY_DELAYS.length}）`);
+        await sleep(wait);
+        setStatus('讀取中');
+      }
+    }
+    const { recs, bud } = got;
     rows = recs;
     headers = [...new Set(rows.slice(0, 200).flatMap(r => Object.keys(r)))];
     if (bud){ budgets = bud; store.set('budgetCache', budgets); }
@@ -390,7 +416,10 @@ async function load(){
       setStatus('欄位無法自動辨識，請到「設定」指定工號、人員與日期欄位', true);
     }
   }catch(err){
-    setStatus('讀取失敗：' + err.message, true);
+    const stale = rows.length ? '（畫面為上次成功讀取的資料）' : '';
+    setStatus('讀取失敗：' + err.message + stale, true);
+  }finally{
+    loading = false; btn.disabled = false;
   }
   render();
 }
