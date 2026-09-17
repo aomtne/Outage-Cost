@@ -94,8 +94,23 @@ tr.detail td{background:var(--paper);padding:0}
 .detail-box table{min-width:0;width:auto}
 tr.detail .detail-box th,tr.detail .detail-box td{padding:6px 0 6px 32px;border-bottom:1px solid var(--line);background:transparent;text-align:right}
 tr.detail .detail-box th:first-child,tr.detail .detail-box td:first-child{padding-left:4px;text-align:left;min-width:5em}
-tr.detail .detail-box td:nth-child(n+5),tr.detail .detail-box th:nth-child(n+5){min-width:7.5em}
+tr.detail .detail-box td:nth-child(n+8),tr.detail .detail-box th:nth-child(n+8){min-width:7.5em}
+tr.detail .detail-box td:nth-child(2),tr.detail .detail-box th:nth-child(2){text-align:left}
+tr.detail .detail-box td:nth-child(3),tr.detail .detail-box th:nth-child(3){text-align:center}
 tr.detail .detail-box td:last-child,tr.detail .detail-box th:last-child{padding-right:8px}
+.rangebar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:10px 14px}
+.rangebar b{font-size:.9rem;margin-right:4px}
+.rangebar input[type=date]{padding:4px 8px;border:1px solid var(--line);border-radius:3px;background:transparent;font-family:var(--num)}
+.rangebar .quick{font-size:.8rem;padding:3px 10px}
+.rangebar .info{font-size:.8rem;color:var(--muted);margin-left:auto}
+.rangebar.active{border-color:var(--budget);box-shadow:inset 3px 0 0 var(--budget)}
+tr.detail select.grade{padding:3px 6px;border:1px solid var(--line);border-radius:3px;background:var(--panel);font-family:var(--txt);font-size:.85rem}
+tr.detail select.grade.ct{border-color:var(--budget);color:var(--budget);font-weight:500}
+tr.detail .rate{font-size:.85rem;color:var(--muted)}
+.tag{display:inline-block;font-family:var(--txt);font-size:.72rem;padding:0 6px;border-radius:3px;background:var(--budget);color:#fff;margin-left:6px;vertical-align:1px}
+.wage{border-collapse:collapse;min-width:0;width:100%;margin-top:6px}
+.wage th,.wage td{padding:4px 6px;font-size:.85rem;border-bottom:1px solid var(--line)}
+.wage td{font-family:var(--num)}
 .empty{padding:40px;text-align:center;color:var(--muted)}
 
 dialog{border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);padding:0;width:min(560px,94vw)}
@@ -138,8 +153,17 @@ dialog legend{font-size:.85rem;color:var(--muted);padding:0 4px}
   </aside>
 
   <main>
+    <div class="rangebar" id="rangebar">
+      <b>統計區間</b>
+      <input type="date" id="rFrom" aria-label="開始日期"> <span>至</span>
+      <input type="date" id="rTo" aria-label="結束日期">
+      <button class="btn quick" data-range="month">本月</button>
+      <button class="btn quick" data-range="year">今年</button>
+      <button class="btn quick" data-range="clear">不限</button>
+      <span class="info" id="rInfo">未設定區間，計算全部日期</span>
+    </div>
     <div class="totals">
-      <div class="s"><span>截至今日支出</span><b id="tSpent">0</b></div>
+      <div class="s"><span id="lSpent">截至今日支出</span><b id="tSpent">0</b></div>
       <div><span>預期支出</span><b id="tPlan">0</b></div>
       <div class="b"><span>預算</span><b id="tBudget">0</b></div>
       <div><span>預算剩餘（以預期計）</span><b id="tLeft">0</b></div>
@@ -159,7 +183,7 @@ dialog legend{font-size:.85rem;color:var(--muted);padding:0 4px}
 
     <section>
       <h2>工號明細</h2>
-      <p class="hint" style="margin:-6px 0 10px">點選列可展開每位人員的平日／週六／週日天數。預算輸入後按 Enter 或離開欄位即寫回試算表。</p>
+      <p class="hint" style="margin:-6px 0 10px">點選列可展開每位人員天數，並逐人設定是否為協力商（等級）及是否出差。預算輸入後按 Enter 或離開欄位即寫回試算表。</p>
       <div class="table-wrap">
         <table>
           <thead><tr>
@@ -185,6 +209,12 @@ dialog legend{font-size:.85rem;color:var(--muted);padding:0 4px}
       <div class="row"><label for="rWd">週一至週五</label><input id="rWd" type="number" min="0"></div>
       <div class="row"><label for="rSat">週六</label><input id="rSat" type="number" min="0"></div>
       <div class="row"><label for="rSun">週日</label><input id="rSun" type="number" min="0"></div>
+    </fieldset>
+    <fieldset>
+      <legend>協力商日薪（表一，元／人／日，不分平假日）</legend>
+      <div class="table-wrap"><table class="wage" id="wageTbl"></table></div>
+      <div class="row" style="margin-top:10px"><label for="rTrip">出差加給</label><input id="rTrip" type="number" min="0"></div>
+      <p class="hint">協力商人員的每日成本 = 等級日薪 ＋（有出差時）出差加給；不套用上方本處人員平日／週六／週日費率。</p>
     </fieldset>
     <fieldset>
       <legend>欄位對應</legend>
@@ -214,6 +244,17 @@ const store = {
 };
 let cfg = Object.assign({ url: DEFAULT_URL, rates: { wd:14000, sat:15500, sun:3500 },
   map: { order:'工號', name:'備註', person:'姓名', start:'開始日期', end:'結束日期', date:'' } }, store.get('cfg2', {}));
+const WAGE_DEFAULT = {            // 表一：等 → [1級..5級]
+  5: [2915, 2995, 3075, 3300, 3500],
+  4: [2415, 2490, 2565, 2640, 2715],
+  3: [1975, 2035, 2095, 2155, 2215]
+};
+const GRADE_NAME = { 5:'五等', 4:'四等', 3:'三等' };
+if (!cfg.wage) cfg.wage = JSON.parse(JSON.stringify(WAGE_DEFAULT));
+if (cfg.trip == null) cfg.trip = 1500;
+let contractors = store.get('contractors', {});   // { 姓名: '4-2' }（四等2級）
+let trips = store.get('trips', {});               // { '工號|姓名': true }
+let range = store.get('range', { from:'', to:'' });
 let rows = [], headers = [], budgets = {}, orders = [];
 let selected = new Set(store.get('selected', []));
 let hasSelection = store.get('selected', null) !== null;
@@ -357,6 +398,7 @@ async function load(){
 /* ============ 計算 ============ */
 function compute(){
   const m = cfg.map, today = todayKey(), R = cfg.rates;
+  const inRange = d => (!range.from || d >= range.from) && (!range.to || d <= range.to);
   const map = new Map();
   for (const r of rows){
     const no = String(r[m.order] ?? '').trim();
@@ -373,25 +415,64 @@ function compute(){
     let o = map.get(no);
     if (!o){ o = { no, names:new Set(), pairs:new Map() }; map.set(no, o); }
     if (m.name && r[m.name]) o.names.add(String(r[m.name]).trim());
+    days = days.filter(inRange);
     for (const p of ppl) for (const d of days) o.pairs.set(p + '|' + d, [p, d]);
   }
 
   orders = [...map.values()].map(o => {
     const per = new Map(); let spent = 0, plan = 0, first = null, last = null;
     for (const [p, d] of o.pairs.values()){
-      const t = dayType(d), cost = R[t];
+      const t = dayType(d), cost = personDayCost(o.no, p, t);
       plan += cost; if (d <= today) spent += cost;
       if (!first || d < first) first = d; if (!last || d > last) last = d;
-      const x = per.get(p) || { p, wd:0, sat:0, sun:0, spent:0, plan:0 };
+      const x = per.get(p) || { p, wd:0, sat:0, sun:0, spent:0, plan:0, grade: contractors[p] || '', trip: !!trips[o.no + '|' + p], rate: personDayCost(o.no, p, null) };
       x[t]++; x.plan += cost; if (d <= today) x.spent += cost;
       per.set(p, x);
     }
     return { no:o.no, name:[...o.names].join('／'), spent, plan, first, last,
       people:[...per.values()].sort((a,b) => b.plan - a.plan),
-      personDays:o.pairs.size };
-  }).sort((a,b) => a.no.localeCompare(b.no, 'zh-Hant', { numeric:true }));
+      personDays:o.pairs.size, contractorCount:[...per.values()].filter(x => x.grade).length };
+  }).filter(o => o.personDays > 0 || (!range.from && !range.to)).sort((a,b) => a.no.localeCompare(b.no, 'zh-Hant', { numeric:true }));
 
   if (!hasSelection){ selected = new Set(orders.map(o => o.no)); }
+}
+
+function gradeRate(code){
+  const [g, l] = String(code).split('-').map(Number);
+  return cfg.wage[g] ? Number(cfg.wage[g][l-1]) || 0 : 0;
+}
+// t 為 null 時回傳協力商日成本（本處人員回傳 null）
+function personDayCost(no, p, t){
+  const code = contractors[p];
+  if (code) return gradeRate(code) + (trips[no + '|' + p] ? Number(cfg.trip) || 0 : 0);
+  return t ? cfg.rates[t] : null;
+}
+function gradeOptions(sel){
+  let h = `<option value="">本處人員</option>`;
+  for (const g of [5,4,3]){
+    h += `<optgroup label="協力商 ${GRADE_NAME[g]}">`;
+    for (let l = 1; l <= 5; l++){ const v = `${g}-${l}`; h += `<option value="${v}" ${sel === v ? 'selected' : ''}>${GRADE_NAME[g]}${l}級（${money(cfg.wage[g][l-1])}）</option>`; }
+    h += `</optgroup>`;
+  }
+  return h;
+}
+
+/* ============ 統計區間 ============ */
+function renderRange(){
+  $('#rFrom').value = range.from || ''; $('#rTo').value = range.to || '';
+  const active = !!(range.from || range.to);
+  $('#rangebar').classList.toggle('active', active);
+  const f = s => s ? s.replace(/-/g, '/') : '';
+  $('#rInfo').textContent = !active ? '未設定區間，計算全部日期'
+    : `只計算 ${range.from ? f(range.from) : '最早'} 至 ${range.to ? f(range.to) : '最晚'} 之人日`;
+  const today = todayKey();
+  $('#lSpent').textContent = range.to && range.to < today ? '區間內已支出' : '截至今日支出';
+}
+function setRange(from, to){
+  if (from && to && to < from) [from, to] = [to, from];
+  range = { from: from || '', to: to || '' };
+  store.set('range', range);
+  renderRange(); compute(); render();
 }
 
 /* ============ 畫面 ============ */
@@ -422,7 +503,7 @@ function renderTotalsChartTable(){
   drawChart(shown);
 
   const tbody = $('#tbody');
-  if (!shown.length){ tbody.innerHTML = '<tr><td colspan="10" class="empty">左側勾選工號後顯示</td></tr>'; return; }
+  if (!shown.length){ tbody.innerHTML = `<tr><td colspan="10" class="empty">${(range.from || range.to) && !orders.length ? '統計區間內沒有派工紀錄' : '左側勾選工號後顯示'}</td></tr>`; return; }
   tbody.innerHTML = shown.map(o => {
     const b = budgets[o.no];
     const ratio = b ? o.plan / b : null;
@@ -432,15 +513,19 @@ function renderTotalsChartTable(){
     let html = `<tr class="order ${open ? 'open' : ''}" data-no="${esc(o.no)}">
       <td><span class="caret">▸</span>${esc(o.no)}</td>
       <td class="nm">${esc(o.name)}</td>
-      <td>${o.people.length}</td><td>${o.personDays}</td><td>${period}</td>
+      <td>${o.people.length}${o.contractorCount ? `<span class="tag" title="協力商人數">協${o.contractorCount}</span>` : ''}</td><td>${o.personDays}</td><td>${period}</td>
       <td>${money(o.spent)}</td><td>${money(o.plan)}</td>
       <td><input class="budget-in" inputmode="numeric" data-no="${esc(o.no)}" value="${b ?? ''}" placeholder="未設定"></td>
       <td>${ratio == null ? '—' : `<span class="meter"><span class="bar"><i class="${cls}" style="width:${Math.min(ratio,1)*100}%"></i></span>${(ratio*100).toFixed(0)}%</span>`}</td>
       <td class="${b != null && b - o.plan < 0 ? 'neg' : ''}">${b == null ? '—' : money(b - o.plan)}</td></tr>`;
     if (open){
       html += `<tr class="detail"><td colspan="10"><div class="detail-box"><table>
-        <thead><tr><th>人員</th><th>平日</th><th>週六</th><th>週日</th><th>截至今日</th><th>預期</th></tr></thead><tbody>
-        ${o.people.map(p => `<tr><td style="text-align:left;font-family:var(--txt)">${esc(p.p)}</td><td>${p.wd}</td><td>${p.sat}</td><td>${p.sun}</td><td>${money(p.spent)}</td><td>${money(p.plan)}</td></tr>`).join('')}
+        <thead><tr><th>人員</th><th>身分／等級</th><th>出差</th><th>日薪</th><th>平日</th><th>週六</th><th>週日</th><th>截至今日</th><th>預期</th></tr></thead><tbody>
+        ${o.people.map(p => `<tr><td style="text-align:left;font-family:var(--txt)">${esc(p.p)}</td>
+          <td><select class="grade ${p.grade ? 'ct' : ''}" data-person="${esc(p.p)}">${gradeOptions(p.grade)}</select></td>
+          <td><input type="checkbox" class="trip" data-person="${esc(p.p)}" data-no="${esc(o.no)}" ${p.trip ? 'checked' : ''} ${p.grade ? '' : 'disabled title="僅協力商可勾選"'}></td>
+          <td class="rate">${p.grade ? money(p.rate) : '依平假日'}</td>
+          <td>${p.wd}</td><td>${p.sat}</td><td>${p.sun}</td><td>${money(p.spent)}</td><td>${money(p.plan)}</td></tr>`).join('')}
         </tbody></table></div></td></tr>`;
     }
     return html;
@@ -522,11 +607,33 @@ $('#search').addEventListener('input', renderList);
 $('#btnReload').addEventListener('click', load);
 
 $('#tbody').addEventListener('click', e => {
-  if (e.target.closest('.budget-in')) return;
+  if (e.target.closest('.budget-in, select, input')) return;
   const tr = e.target.closest('tr.order'); if (!tr) return;
   const no = tr.dataset.no; openRows.has(no) ? openRows.delete(no) : openRows.add(no);
   renderTotalsChartTable();
 });
+$('#tbody').addEventListener('change', e => {
+  const el = e.target;
+  if (el.classList.contains('grade')){
+    const p = el.dataset.person;
+    if (el.value) contractors[p] = el.value; else delete contractors[p];
+    store.set('contractors', contractors);
+    toast(el.value ? `${p} 設為協力商 ${el.selectedOptions[0].textContent}（所有工號適用）` : `${p} 改為本處人員`);
+  } else if (el.classList.contains('trip')){
+    const k = el.dataset.no + '|' + el.dataset.person;
+    if (el.checked) trips[k] = true; else delete trips[k];
+    store.set('trips', trips);
+  } else return;
+  compute(); renderTotalsChartTable();
+});
+$('#rFrom').addEventListener('change', () => setRange($('#rFrom').value, $('#rTo').value));
+$('#rTo').addEventListener('change', () => setRange($('#rFrom').value, $('#rTo').value));
+document.querySelectorAll('[data-range]').forEach(b => b.addEventListener('click', () => {
+  const n = new Date(), y = n.getFullYear(), mo = n.getMonth();
+  if (b.dataset.range === 'month') setRange(keyOf(new Date(y, mo, 1)), keyOf(new Date(y, mo + 1, 0)));
+  else if (b.dataset.range === 'year') setRange(`${y}-01-01`, `${y}-12-31`);
+  else setRange('', '');
+}));
 $('#tbody').addEventListener('keydown', e => { if (e.target.classList.contains('budget-in') && e.key === 'Enter') e.target.blur(); });
 $('#tbody').addEventListener('focusout', e => {
   if (e.target.classList.contains('budget-in')) saveBudget(e.target.dataset.no, e.target.value, e.target);
@@ -534,6 +641,9 @@ $('#tbody').addEventListener('focusout', e => {
 
 const MAP_IDS = { order:'mOrder', name:'mName', person:'mPerson', date:'mDate', start:'mStart', end:'mEnd' };
 $('#btnSettings').addEventListener('click', () => {
+  $('#rTrip').value = cfg.trip;
+  $('#wageTbl').innerHTML = '<thead><tr><th style="text-align:left">等級</th>' + [1,2,3,4,5].map(l => `<th>${l}級</th>`).join('') + '</tr></thead><tbody>'
+    + [5,4,3].map(g => `<tr><td style="text-align:left;font-family:var(--txt)">${GRADE_NAME[g]}</td>` + cfg.wage[g].map((v,i) => `<td><input class="budget-in" style="width:70px" type="number" min="0" data-g="${g}" data-l="${i}" value="${v}"></td>`).join('') + '</tr>').join('') + '</tbody>';
   $('#cUrl').value = cfg.url; $('#rWd').value = cfg.rates.wd; $('#rSat').value = cfg.rates.sat; $('#rSun').value = cfg.rates.sun;
   for (const [f, id] of Object.entries(MAP_IDS)){
     $('#'+id).innerHTML = '<option value="">（不使用）</option>' + headers.map(h => `<option ${cfg.map[f] === h ? 'selected' : ''}>${esc(h)}</option>`).join('');
@@ -544,6 +654,8 @@ $('#dlg').addEventListener('close', () => {
   if ($('#dlg').returnValue !== 'ok') return;
   const urlChanged = $('#cUrl').value.trim() !== cfg.url;
   cfg.url = $('#cUrl').value.trim() || DEFAULT_URL;
+  document.querySelectorAll('#wageTbl input').forEach(i => { cfg.wage[i.dataset.g][i.dataset.l] = +i.value || 0; });
+  cfg.trip = +$('#rTrip').value || 0;
   cfg.rates = { wd:+$('#rWd').value || 0, sat:+$('#rSat').value || 0, sun:+$('#rSun').value || 0 };
   for (const [f, id] of Object.entries(MAP_IDS)) cfg.map[f] = $('#'+id).value;
   store.set('cfg2', cfg);
@@ -551,6 +663,7 @@ $('#dlg').addEventListener('close', () => {
 });
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (chart){ chart.destroy(); chart = null; } renderTotalsChartTable(); });
 
+renderRange();
 load();
 </script>
 </body>
