@@ -202,7 +202,9 @@ dialog legend{font-size:.85rem;color:var(--muted);padding:0 4px}
     <h3>設定</h3>
     <fieldset>
       <legend>資料來源</legend>
+      <div class="row"><label for="cMirror">鏡像試算表 ID</label><input id="cMirror" type="text" placeholder="留空則使用內建預設"></div>
       <div class="row"><label for="cUrl">Apps Script 網址</label><input id="cUrl" type="url"></div>
+      <p class="hint">讀取直接走鏡像試算表，不經過 Apps Script，跟派工網頁互不影響。Apps Script 網址只在鏡像讀取失敗時當備援，以及寫回預算時使用。兩欄留空都會回到內建預設值。</p>
     </fieldset>
     <fieldset>
       <legend>日薪（元／人／日）</legend>
@@ -238,12 +240,15 @@ dialog legend{font-size:.85rem;color:var(--muted);padding:0 4px}
 <script>
 /* ============ 設定與暫存 ============ */
 const DEFAULT_URL = 'https://script.google.com/macros/s/AKfycby0oIervhkmGpopOo12Bd43OuuMVc5T5kIPAA_QqZDwVU-M-QAN-86VlUeCZo5r-eoB6Q/exec';
+const DEFAULT_MIRROR = '1CyVyHFTaVOEH2wpKL4wz-vE4sRYRrf3rfXHVjobxLc0';   // NDT_成本鏡像（唯讀）
 const store = {
   get(k, d){ try{ const v = localStorage.getItem('costdash:'+k); return v == null ? d : JSON.parse(v); }catch(e){ return d; } },
   set(k, v){ try{ localStorage.setItem('costdash:'+k, JSON.stringify(v)); }catch(e){} }
 };
-let cfg = Object.assign({ url: DEFAULT_URL, rates: { wd:14000, sat:15500, sun:3500 },
+let cfg = Object.assign({ url: DEFAULT_URL, mirrorId: DEFAULT_MIRROR, rates: { wd:14000, sat:15500, sun:3500 },
   map: { order:'工號', name:'備註', person:'姓名', start:'開始日期', end:'結束日期', date:'' } }, store.get('cfg2', {}));
+// 之前的版本會把空的 mirrorId 存進 localStorage，會蓋掉上面的預設值，這裡補回來
+if (!cfg.mirrorId) cfg.mirrorId = DEFAULT_MIRROR;
 const WAGE_DEFAULT = {            // 表一：等 → [1級..5級]
   5: [2915, 2995, 3075, 3300, 3500],
   4: [2415, 2490, 2565, 2640, 2715],
@@ -374,28 +379,138 @@ const isTransient = msg => /次數過多|simultaneous|too many|忙碌|timed? ?ou
 const RETRY_DELAYS = [1000, 2000, 4000];
 let loading = false;
 
-async function fetchCostAll(){
+/* ============ 鏡像讀取（不經過 Apps Script） ============ */
+const MIRROR_TABS = { rows:'派工', budgets:'預算', meta:'資訊' };
+
+// 從貼進來的字串裡挑出試算表 ID，整個網址貼進來也能用
+function mirrorIdOf(s){
+  s = String(s || '').trim();
+  const m = s.match(/\/d\/([a-zA-Z0-9_-]{20,})/);
+  return m ? m[1] : s;
+}
+function gvizUrl(id, tab){
+  return `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(tab)}&t=${Date.now()}`;
+}
+
+// RFC4180：處理引號內的逗號與換行
+function parseCSV(text){
+  const out = [];
+  let row = [], cell = '', q = false;
+  for (let i = 0; i < text.length; i++){
+    const c = text[i];
+    if (q){
+      if (c === '"'){ if (text[i+1] === '"'){ cell += '"'; i++; } else q = false; }
+      else cell += c;
+    } else if (c === '"') q = true;
+    else if (c === ','){ row.push(cell); cell = ''; }
+    else if (c === '\n'){ row.push(cell); out.push(row); row = []; cell = ''; }
+    else if (c !== '\r') cell += c;
+  }
+  if (cell !== '' || row.length){ row.push(cell); out.push(row); }
+  return out.filter(r => r.some(v => String(v).trim() !== ''));
+}
+function csvToObjects(text){
+  const t = parseCSV(text);
+  if (t.length < 2) return [];
+  const h = t[0].map(x => String(x).trim());
+  return t.slice(1).map(r => Object.fromEntries(h.map((k, i) => [k, r[i] ?? ''])));
+}
+
+async function getCsv(id, tab){
+  const res = await fetch(gvizUrl(id, tab), { cache:'no-store' });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const text = await res.text();
+  if (/^\s*</.test(text)) throw new Error('鏡像試算表未開放檢視權限（請執行 setupMirror）');
+  return text;
+}
+
+// 三個分頁同時抓，互不等待
+async function fetchMirror(){
+  const id = mirrorIdOf(cfg.mirrorId);
+  if (!id) throw new Error('未設定鏡像試算表 ID');
+  const [rowsCsv, budCsv, metaCsv] = await Promise.all([
+    getCsv(id, MIRROR_TABS.rows),
+    getCsv(id, MIRROR_TABS.budgets),
+    getCsv(id, MIRROR_TABS.meta).catch(() => '')
+  ]);
+
+  const recs = csvToObjects(rowsCsv);
+  if (!recs.length) throw new Error('鏡像的「派工」分頁是空的');
+
+  const bud = {};
+  for (const b of csvToObjects(budCsv)){
+    const k = String(b['工號'] ?? '').trim();
+    const v = String(b['預算'] ?? '').replace(/[,\s]/g, '');
+    if (k && v !== '' && !isNaN(Number(v))) bud[k] = Number(v);
+  }
+  const meta = csvToObjects(metaCsv)[0] || {};
+  return { recs, bud, snapshotAt: meta['更新時間'] || null, via: '鏡像' };
+}
+
+/* ============ Apps Script 讀取（備援 + 強制重讀） ============ */
+// force=true 時加 fresh=1，要求後端重新讀表（慢但保證最新）；
+// 平常不加，後端直接回 Drive 快照檔，1 秒內就回來。
+async function fetchCostAll(force){
   const sep = cfg.url.includes('?') ? '&' : '?';
-  const res = await fetch(cfg.url + sep + 'action=costAll&t=' + Date.now(), { cache: 'no-store' });
+  const url = cfg.url + sep + 'action=costAll' + (force ? '&fresh=1' : '') + '&t=' + Date.now();
+  const res = await fetch(url, { cache: 'no-store' });
   if (!res.ok) throw new Error('HTTP ' + res.status);
   const text = await res.text();
   let data;
   try{ data = JSON.parse(text); }
   catch(e){ throw new Error('回傳內容不是 JSON，請確認 Apps Script 已部署為「任何人」可存取'); }
-  return normalize(data);
+  const out = normalize(data);
+  out.snapshotAt = data && data.snapshotAt || null;
+  out.via = 'Apps Script';
+  return out;
 }
 
-async function load(){
+// 有鏡像就走鏡像；鏡像掛了自動退回 Apps Script，不讓畫面空白
+async function fetchData(force){
+  if (cfg.mirrorId && !force){
+    try{ return await fetchMirror(); }
+    catch(e){ console.warn('鏡像讀取失敗，改用 Apps Script：', e.message); }
+  }
+  return await fetchCostAll(force);
+}
+
+/* ---- 本機暫存：先把上次的資料畫出來，畫面不用空等網路 ---- */
+const SNAP_KEY = 'snap';
+function applyData(recs, bud, snapshotAt){
+  rows = recs;
+  headers = [...new Set(rows.slice(0, 200).flatMap(r => Object.keys(r)))];
+  if (bud && Object.keys(bud).length) budgets = bud;
+  else budgets = store.get('budgetCache', {});
+  autoMap(); store.set('cfg2', cfg);
+  compute();
+  return snapshotAt;
+}
+function fmtStamp(iso){
+  if (!iso) return '時間不明';
+  const d = new Date(iso);
+  return isNaN(d) ? '時間不明' : `${pad(d.getMonth()+1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function paintCached(){
+  const c = store.get(SNAP_KEY, null);
+  if (!c || !Array.isArray(c.recs) || !c.recs.length) return false;
+  try{
+    applyData(c.recs, c.bud, c.snapshotAt);
+    render();
+    setStatus(`本機暫存（資料時間 ${fmtStamp(c.snapshotAt)}）・正在更新…`);
+    return true;
+  }catch(e){ return false; }
+}
+
+async function load(force){
   if (loading) return;                              // 避免連點重新整理疊加請求
   loading = true;
   const btn = $('#btnReload'); btn.disabled = true;
-  setStatus('讀取中');
+  setStatus(force ? '重新讀取試算表（約 5 秒）' : '讀取中');
   try{
-    let got = null, lastErr = null;
+    let got = null;
     for (let i = 0; i <= RETRY_DELAYS.length; i++){
-      try{ got = await fetchCostAll(); break; }
+      try{ got = await fetchData(force); break; }
       catch(e){
-        lastErr = e;
         if (i === RETRY_DELAYS.length || !isTransient(e.message)) throw e;
         const wait = RETRY_DELAYS[i] + Math.random() * 500;   // 加亂數，避免多人同時重試又撞在一起
         setStatus(`伺服器忙碌，${(wait/1000).toFixed(1)} 秒後自動重試（${i+1}/${RETRY_DELAYS.length}）`);
@@ -403,20 +518,23 @@ async function load(){
         setStatus('讀取中');
       }
     }
-    const { recs, bud } = got;
-    rows = recs;
-    headers = [...new Set(rows.slice(0, 200).flatMap(r => Object.keys(r)))];
-    if (bud){ budgets = bud; store.set('budgetCache', budgets); }
-    else { budgets = store.get('budgetCache', {}); toast('試算表未回傳預算，暫時使用本機紀錄', true); }
-    autoMap(); store.set('cfg2', cfg);
-    compute();
+    const { recs, bud, snapshotAt, via } = got;
+    if (!bud || !Object.keys(bud).length) toast('未取得預算資料，暫時使用本機紀錄', true);
+    applyData(recs, bud, snapshotAt);
+    store.set('budgetCache', budgets);
+    store.set(SNAP_KEY, { recs, bud: budgets, snapshotAt });   // 下次開頁面秒出畫面
+
     const now = new Date();
-    setStatus(`更新於 ${pad(now.getHours())}:${pad(now.getMinutes())}，共 ${rows.length} 筆紀錄、${orders.length} 個工號`);
+    const age = snapshotAt ? Math.round((now - new Date(snapshotAt)) / 60000) : null;
+    const src = snapshotAt
+      ? `資料時間 ${fmtStamp(snapshotAt)}${age >= 1 ? `（${age} 分鐘前）` : ''}`
+      : `更新於 ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    setStatus(`${src}，共 ${rows.length} 筆紀錄、${orders.length} 個工號・${via}`);
     if (!cfg.map.order || !cfg.map.person || (!cfg.map.date && !cfg.map.start)){
       setStatus('欄位無法自動辨識，請到「設定」指定工號、人員與日期欄位', true);
     }
   }catch(err){
-    const stale = rows.length ? '（畫面為上次成功讀取的資料）' : '';
+    const stale = rows.length ? '（畫面為先前的資料）' : '';
     setStatus('讀取失敗：' + err.message + stale, true);
   }finally{
     loading = false; btn.disabled = false;
@@ -633,7 +751,7 @@ document.querySelectorAll('[data-pick]').forEach(b => b.addEventListener('click'
   hasSelection = true; store.set('selected', [...selected]); render();
 }));
 $('#search').addEventListener('input', renderList);
-$('#btnReload').addEventListener('click', load);
+$('#btnReload').addEventListener('click', () => load(true));   // 手動按 = 強制後端重讀試算表
 
 $('#tbody').addEventListener('click', e => {
   if (e.target.closest('.budget-in, select, input')) return;
@@ -673,7 +791,8 @@ $('#btnSettings').addEventListener('click', () => {
   $('#rTrip').value = cfg.trip;
   $('#wageTbl').innerHTML = '<thead><tr><th style="text-align:left">等級</th>' + [1,2,3,4,5].map(l => `<th>${l}級</th>`).join('') + '</tr></thead><tbody>'
     + [5,4,3].map(g => `<tr><td style="text-align:left;font-family:var(--txt)">${GRADE_NAME[g]}</td>` + cfg.wage[g].map((v,i) => `<td><input class="budget-in" style="width:70px" type="number" min="0" data-g="${g}" data-l="${i}" value="${v}"></td>`).join('') + '</tr>').join('') + '</tbody>';
-  $('#cUrl').value = cfg.url; $('#rWd').value = cfg.rates.wd; $('#rSat').value = cfg.rates.sat; $('#rSun').value = cfg.rates.sun;
+  $('#cUrl').value = cfg.url; $('#cMirror').value = cfg.mirrorId || '';
+  $('#rWd').value = cfg.rates.wd; $('#rSat').value = cfg.rates.sat; $('#rSun').value = cfg.rates.sun;
   for (const [f, id] of Object.entries(MAP_IDS)){
     $('#'+id).innerHTML = '<option value="">（不使用）</option>' + headers.map(h => `<option ${cfg.map[f] === h ? 'selected' : ''}>${esc(h)}</option>`).join('');
   }
@@ -681,19 +800,22 @@ $('#btnSettings').addEventListener('click', () => {
 });
 $('#dlg').addEventListener('close', () => {
   if ($('#dlg').returnValue !== 'ok') return;
-  const urlChanged = $('#cUrl').value.trim() !== cfg.url;
+  const newMirror = mirrorIdOf($('#cMirror').value) || DEFAULT_MIRROR;
+  const srcChanged = $('#cUrl').value.trim() !== cfg.url || newMirror !== (cfg.mirrorId || '');
   cfg.url = $('#cUrl').value.trim() || DEFAULT_URL;
+  cfg.mirrorId = newMirror;
   document.querySelectorAll('#wageTbl input').forEach(i => { cfg.wage[i.dataset.g][i.dataset.l] = +i.value || 0; });
   cfg.trip = +$('#rTrip').value || 0;
   cfg.rates = { wd:+$('#rWd').value || 0, sat:+$('#rSat').value || 0, sun:+$('#rSun').value || 0 };
   for (const [f, id] of Object.entries(MAP_IDS)) cfg.map[f] = $('#'+id).value;
   store.set('cfg2', cfg);
-  if (urlChanged) load(); else { compute(); render(); }
+  if (srcChanged) load(false); else { compute(); render(); }
 });
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (chart){ chart.destroy(); chart = null; } renderTotalsChartTable(); });
 
 renderRange();
-load();
+paintCached();   // 先把上次的資料畫出來
+load(false);     // 再從快照更新（不強制後端重讀）
 </script>
 </body>
 </html>
