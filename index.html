@@ -239,6 +239,7 @@ dialog legend{font-size:.85rem;color:var(--muted);padding:0 4px}
 
 <script>
 /* ============ 設定與暫存 ============ */
+const APP_VER = '2026-09-18c';
 const DEFAULT_URL = 'https://script.google.com/macros/s/AKfycby0oIervhkmGpopOo12Bd43OuuMVc5T5kIPAA_QqZDwVU-M-QAN-86VlUeCZo5r-eoB6Q/exec';
 const DEFAULT_MIRROR = '1CyVyHFTaVOEH2wpKL4wz-vE4sRYRrf3rfXHVjobxLc0';   // NDT_成本鏡像（唯讀）
 const store = {
@@ -249,6 +250,8 @@ let cfg = Object.assign({ url: DEFAULT_URL, mirrorId: DEFAULT_MIRROR, rates: { w
   map: { order:'工號', name:'備註', person:'姓名', start:'開始日期', end:'結束日期', date:'' } }, store.get('cfg2', {}));
 // 之前的版本會把空的 mirrorId 存進 localStorage，會蓋掉上面的預設值，這裡補回來
 if (!cfg.mirrorId) cfg.mirrorId = DEFAULT_MIRROR;
+// localStorage 裡如果存了不是 Apps Script 的網址（例如誤貼試算表網址），直接修掉
+if (!/script\.google\.com\/macros\//.test(cfg.url)) cfg.url = DEFAULT_URL;
 const WAGE_DEFAULT = {            // 表一：等 → [1級..5級]
   5: [2915, 2995, 3075, 3300, 3500],
   4: [2415, 2490, 2565, 2640, 2715],
@@ -466,10 +469,15 @@ async function fetchCostAll(force){
 }
 
 // 有鏡像就走鏡像；鏡像掛了自動退回 Apps Script，不讓畫面空白
+let lastMirrorErr = '';
 async function fetchData(force){
+  lastMirrorErr = '';
   if (cfg.mirrorId && !force){
     try{ return await fetchMirror(); }
-    catch(e){ console.warn('鏡像讀取失敗，改用 Apps Script：', e.message); }
+    catch(e){
+      lastMirrorErr = e.message;
+      console.warn('鏡像讀取失敗，改用 Apps Script：', e.message);
+    }
   }
   return await fetchCostAll(force);
 }
@@ -535,7 +543,8 @@ async function load(force){
     }
   }catch(err){
     const stale = rows.length ? '（畫面為先前的資料）' : '';
-    setStatus('讀取失敗：' + err.message + stale, true);
+    const mirr = lastMirrorErr ? `［鏡像：${lastMirrorErr}］` : '';
+    setStatus('讀取失敗：' + err.message + mirr + stale, true);
   }finally{
     loading = false; btn.disabled = false;
   }
@@ -788,6 +797,7 @@ $('#tbody').addEventListener('focusout', e => {
 
 const MAP_IDS = { order:'mOrder', name:'mName', person:'mPerson', date:'mDate', start:'mStart', end:'mEnd' };
 $('#btnSettings').addEventListener('click', () => {
+  $('#dlg').querySelector('h3').textContent = '設定　' + APP_VER;
   $('#rTrip').value = cfg.trip;
   $('#wageTbl').innerHTML = '<thead><tr><th style="text-align:left">等級</th>' + [1,2,3,4,5].map(l => `<th>${l}級</th>`).join('') + '</tr></thead><tbody>'
     + [5,4,3].map(g => `<tr><td style="text-align:left;font-family:var(--txt)">${GRADE_NAME[g]}</td>` + cfg.wage[g].map((v,i) => `<td><input class="budget-in" style="width:70px" type="number" min="0" data-g="${g}" data-l="${i}" value="${v}"></td>`).join('') + '</tr>').join('') + '</tbody>';
@@ -798,11 +808,32 @@ $('#btnSettings').addEventListener('click', () => {
   }
   $('#dlg').showModal();
 });
+const IS_GAS = u => /script\.google\.com\/macros\//.test(u);
 $('#dlg').addEventListener('close', () => {
   if ($('#dlg').returnValue !== 'ok') return;
-  const newMirror = mirrorIdOf($('#cMirror').value) || DEFAULT_MIRROR;
-  const srcChanged = $('#cUrl').value.trim() !== cfg.url || newMirror !== (cfg.mirrorId || '');
-  cfg.url = $('#cUrl').value.trim() || DEFAULT_URL;
+
+  const mirrorIn = $('#cMirror').value.trim();
+  const urlIn = $('#cUrl').value.trim();
+  let newMirror = mirrorIdOf(mirrorIn) || DEFAULT_MIRROR;
+  let newUrl = urlIn || DEFAULT_URL;
+
+  // 貼錯欄位是很容易發生的事：試算表網址進了 Apps Script 欄，就會被 CORS 擋成 Failed to fetch
+  if (!IS_GAS(newUrl)){
+    if (/docs\.google\.com\/spreadsheets/.test(newUrl)){
+      newMirror = mirrorIdOf(newUrl) || newMirror;        // 順手把它當鏡像 ID 收下
+      toast('「Apps Script 網址」貼到的是試算表網址，已改填到鏡像欄位', true);
+    } else {
+      toast('「Apps Script 網址」格式不對（應含 script.google.com/macros/），已保留原設定', true);
+    }
+    newUrl = IS_GAS(cfg.url) ? cfg.url : DEFAULT_URL;
+  }
+  if (IS_GAS(mirrorIn)){                                   // 反過來也擋
+    toast('「鏡像試算表 ID」不是放 Apps Script 網址的地方，已改回預設', true);
+    newMirror = DEFAULT_MIRROR;
+  }
+
+  const srcChanged = newUrl !== cfg.url || newMirror !== cfg.mirrorId;
+  cfg.url = newUrl;
   cfg.mirrorId = newMirror;
   document.querySelectorAll('#wageTbl input').forEach(i => { cfg.wage[i.dataset.g][i.dataset.l] = +i.value || 0; });
   cfg.trip = +$('#rTrip').value || 0;
@@ -814,6 +845,32 @@ $('#dlg').addEventListener('close', () => {
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (chart){ chart.destroy(); chart = null; } renderTotalsChartTable(); });
 
 renderRange();
+
+/* ============ 診斷：在 Console 打 diag() ============ */
+window.diag = async function(){
+  const id = mirrorIdOf(cfg.mirrorId);
+  console.log('%c版本 ' + APP_VER, 'font-weight:bold');
+  console.log('鏡像 ID   ', id);
+  console.log('GAS 網址  ', cfg.url);
+  const tests = [
+    ['鏡像／派工  ', gvizUrl(id, MIRROR_TABS.rows)],
+    ['鏡像／預算  ', gvizUrl(id, MIRROR_TABS.budgets)],
+    ['鏡像／資訊  ', gvizUrl(id, MIRROR_TABS.meta)],
+    ['Apps Script ', cfg.url + (cfg.url.includes('?') ? '&' : '?') + 'action=costAll']
+  ];
+  for (const [name, u] of tests){
+    try{
+      const r = await fetch(u, { cache:'no-store' });
+      const t = await r.text();
+      console.log(`${r.ok ? '✓' : '✗'} ${name} HTTP ${r.status}｜${t.length} 字元｜開頭：${t.slice(0, 70).replace(/\s+/g, ' ')}`);
+    }catch(e){
+      console.log(`✗ ${name} ${e.name}：${e.message}`);
+    }
+  }
+  console.log('（Failed to fetch = 連不上或被 CORS 擋；HTTP 401/403 = 權限；開頭是 <HTML = 抓到登入頁）');
+};
+console.log('工號成本追蹤 ' + APP_VER + '｜在此輸入 diag() 可檢查各個資料來源');
+
 paintCached();   // 先把上次的資料畫出來
 load(false);     // 再從快照更新（不強制後端重讀）
 </script>
